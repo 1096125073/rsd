@@ -3,9 +3,18 @@
 
 1.提供server端和client端的程序，只需要在主目录下执行make即可编译
 
-首先，启动server程序，指定服务的ip和端口，比如
+
+
+2.首先，启动server程序，指定服务的ip和端口，比如
 ./server 127.0.0.1 8080
-其次，在能访问服务器ip的机器上，执行
+
+
+3.其次，在能访问服务器ip的机器上，执行
 ./client ip port username password dirname1
 ./client ip port username password dirname2
-上述两个命令可以在不同的机器上执行，只要能访问server的程序即可！dirname1和dirname2指定需要同步的目录
+
+
+4.上述两个命令可以在不同的机器上执行，只要能访问server的程序即可！dirname1和dirname2指定需要同步的目录。
+扔掉你的移动U盘！
+
+
