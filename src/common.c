@@ -35,19 +35,28 @@ ssize_t readLine(int sock,char *buf,int size)
     return i;
 }
 
-void sendMsg(int fd,int code,const char *format,...)
+Boolean sendInfo(int fd,const char *header_type,const char *arg1,const char *arg2)
 {
+    if(header_type == NULL)
+        return FALSE;
     static char buf[BUF_SIZE];
-    sprintf(buf,"%s %d ",STR_CMD[MESSAGE],code);
-    write(fd,buf, strlen(buf));
-    va_list ap;
-    va_start(ap,format);
-    vsnprintf(buf,BUF_SIZE,format,ap);
-    write(fd,buf, strlen(buf));
-    va_end(ap);
-    write(fd,"\r\n",2);
+    if(arg1 == NULL)
+        arg1 = "";
+    if(arg2 == NULL)
+        arg2 = "";
+    sprintf(buf,"%s|%s|%s\r\n",header_type,arg1,arg2);
+    return write(fd,buf, strlen(buf)) == strlen(buf);
 }
 
+Boolean sendMsg(int fd,const char *format,...)
+{
+    va_list ap;
+    va_start(ap,format);
+    static char buf[BUF_SIZE];
+    vsnprintf(buf,BUF_SIZE,format,ap);
+    va_end(ap);
+    return sendInfo(fd,STR_CMD[MESSAGE],buf,NULL);
+}
 Boolean isSock(int fd)
 {
     static struct stat stat_buf;
@@ -88,15 +97,10 @@ int addEpollInLetEvent(int epoll_fd,int fd)
     event.data.fd = fd;
     return epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd,&event);
 }
-Boolean sendHeader(int client_fd,const char*cmd,const char *arg1,const char *arg2)
+int addEpollInLevelEvent(int epoll_fd,int fd)
 {
-    if(cmd == NULL)
-        return FALSE;
-    if(arg1 == NULL)
-        arg1 = "";
-    if(arg2 == NULL)
-        arg2 = "";
-    static char buf[BUF_SIZE];
-    snprintf(buf,BUF_SIZE,"%s %s %s\n",cmd,arg1,arg2);
-    return write(client_fd,buf, strlen(buf)) == strlen(buf);
+    struct epoll_event event;
+    event.events = EPOLLIN | EPOLLRDHUP;
+    event.data.fd = fd;
+    return epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd,&event);
 }

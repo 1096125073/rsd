@@ -1,10 +1,11 @@
 //
 // Created by xia on 2022/4/15.
 //
-
+#define _GNU_SOURCE
 #include "server.h"
 #include "sys/wait.h"
 #include "signal.h"
+#include "fcntl.h"
 
 
 /*
@@ -89,7 +90,7 @@ void updateOneEntry(int pos)
         }
         entries[pos].status = SINGLE;
         entries[pos].pid = -1;
-        sendHeader(entries[pos].first_fd,STR_CMD[UNPAIRED],NULL,NULL);
+        //sendInfo(entries[pos].first_fd,STR_CMD[UNPAIRED],NULL,NULL);
         LOG_INFO("entry %d exist one established connection,name: %s",pos,entries[pos].username);
         return;
     }
@@ -203,22 +204,28 @@ int createServerSocket(const char *ip,int port)
 /*
  * transmit the data between the pairs
  * */
-void transmit(int in_fd,int out_fd)
+void transmit(int in_fd,int out_fd,int pipe_out_fd,int pipe_in_fd)
 {
-    static char buf[BUF_SIZE];
-    ssize_t numRead;
-    while (TRUE)
-    {
-        numRead = read(in_fd,buf,BUF_SIZE);
-        if(numRead == -1)
-        {
-            if(errno == EAGAIN || errno == EWOULDBLOCK)
-                break;
-            else
-                continue;
-        }
-        write(out_fd,buf,numRead);
+    static ssize_t total = 0;
+    ssize_t totalReceived,totalSend;
+    totalReceived = splice(in_fd, NULL, pipe_out_fd, NULL,
+                         1<<16, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+    if (totalReceived == -1) {
+        if(errno != EAGAIN && errno != EWOULDBLOCK)
+            err_exit("splice");
     }
+    totalSend = splice(pipe_in_fd, NULL, out_fd, NULL,
+                       1<<16, SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE);
+    if (totalSend == -1) {
+        if(errno != EAGAIN && errno != EWOULDBLOCK)
+            err_exit("splice");
+    }
+    if(totalReceived != totalSend)
+        LOG_WARN("Server received %ld bytes,Send %ld bytes",totalReceived,totalSend);
+    else
+        LOG_INFO("Server received %ld bytes,Send %ld bytes",totalReceived,totalSend);
+    total += totalSend;
+    LOG_INFO("total is %f",total/(1024*1024.0));
 }
 
 void handleEntry(int pos)
@@ -226,32 +233,23 @@ void handleEntry(int pos)
     int first_fd=entries[pos].first_fd,second_fd = entries[pos].second_fd;
     if(isConnected(first_fd) + isConnected(second_fd) !=2)
         err_exit("couple fd is not all open!");
-    sendHeader(first_fd,STR_CMD[PAIRED],NULL,NULL);
-    sendHeader(second_fd,STR_CMD[PAIRED],NULL,NULL);
+    sendInfo(first_fd,STR_CMD[PAIRED],NULL,NULL);
+    sendInfo(second_fd,STR_CMD[PAIRED],NULL,NULL);
     int epoll_fd;
     epoll_fd = epoll_create(2);
     if(epoll_fd == -1)
         err_exit("epoll_create");
-    struct epoll_event events[2];
-    if(setNonBlock(first_fd) == -1)
-    {
-        close(first_fd);
-        err_exit("fcntl first.");
-    }
 
-    if(addEpollInLetEvent(epoll_fd,first_fd) == -1)
+    if(addEpollInLevelEvent(epoll_fd,first_fd) == -1)
         err_exit("epoll_ctl first_fd.");
 
-    if(setNonBlock(second_fd) == -1)
-    {
-        close(second_fd);
-        err_exit("fcntl second_fd.");
-    }
-
-    if(addEpollInLetEvent(epoll_fd,second_fd) == -1)
+    if(addEpollInLevelEvent(epoll_fd,second_fd) == -1)
         err_exit("epoll_ctl second_fd.");
+    int pipe_fd[2];
+    if(pipe(pipe_fd) == -1)
+        err_exit("piped failed");
     int eventRead,i;
-
+    struct epoll_event events[2];
     while (TRUE)
     {
         eventRead = epoll_wait(epoll_fd,events,2,-1);
@@ -266,10 +264,10 @@ void handleEntry(int pos)
             if(events[i].events & EPOLLIN)
             {
                 if(events[i].data.fd == first_fd)
-                    transmit(first_fd,second_fd);
+                    transmit(first_fd,second_fd,pipe_fd[1],pipe_fd[0]);
 
                 else if(events[i].data.fd == second_fd)
-                    transmit(second_fd,first_fd);
+                    transmit(second_fd,first_fd,pipe_fd[1],pipe_fd[0]);
             }
             if(events[i].events & (EPOLLHUP | EPOLLERR | EPOLLRDHUP))
             {
@@ -320,20 +318,20 @@ int main(int argc,char *argv[])
             continue;
         }
 
-        command = strtok(buf," \n");
+        command = strtok(buf,"|\n");
         if(strcmp(command,STR_CMD[CONNECTING]) != 0)
         {
             errMsg("Command is not right!");
-            sendMsg(client_fd,INSERT_ERRNO,"%s","Command is not right!");
+            sendMsg(client_fd,"%s","Command is not right!");
             close(client_fd);
             continue;
         }
-        username = strtok(NULL," \n");
-        password = strtok(NULL," \n");
+        username = strtok(NULL,"|\n");
+        password = strtok(NULL,"|\n");
         int pos = insertEntry(username,password,client_fd);
         if( pos == -1)
         {
-            sendMsg(client_fd,INSERT_ERRNO,"%s","connect error,check the name and password");
+            sendMsg(client_fd,"%s","connect error,check the name and password");
             LOG_WARN("insert user: %s,password: %s failed",username,password);
             close(client_fd);
             continue;
@@ -359,9 +357,9 @@ int main(int argc,char *argv[])
         }
         else if(entries[pos].status == SINGLE)
         {
-            sendHeader(client_fd,STR_CMD[MESSAGE],"Server: Connect success,waiting "
-                                                  "the pair to connect",NULL);
-            sendHeader(client_fd,STR_CMD[UNPAIRED],NULL,NULL);
+            sendMsg(client_fd,"Server: Connect success,waiting "
+                                                  "the pair to connect");
+            sendInfo(client_fd,STR_CMD[UNPAIRED],NULL,NULL);
         }
 
     }

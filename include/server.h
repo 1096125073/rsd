@@ -48,7 +48,7 @@ int insertEntry(const char *name,const char *password,int fd);
 void clearEntryById(pid_t pid);
 void sigChildHandler(int sig);
 int createServerSocket(const char *ip,int port);
-void transmit(int in_fd,int out_fd);
+void transmit(int in_fd,int out_fd,int pipe_out_fd,int pipe_in_fd);
 void handleEntry(int pos);
 
 

@@ -2,8 +2,8 @@
 // Created by xia on 2022/4/13.
 //
 
+#include <sys/sendfile.h>
 #include "client.h"
-#include "sys/sendfile.h"
 
 
 int createClientSocket(const char *ip,int port)
@@ -40,10 +40,6 @@ int createClientSocket(const char *ip,int port)
  * */
 void handleCloseWrite(struct inotify_event *event,int client_fd)
 {
-#ifdef BUF_SIZE
-#undef BUF_SIZE
-#define BUF_SIZE 4096
-#endif
     static char buf[BUF_SIZE];
     if(event->len > 0)
     {
@@ -61,42 +57,34 @@ void handleCloseWrite(struct inotify_event *event,int client_fd)
         }
         lseek(fd,0,SEEK_SET);
         snprintf(buf,BUF_SIZE,"%ld",(long int)size);
-        ssize_t curSend,numRead,numSend = 0;
-        if(sendHeader(client_fd,STR_CMD[UPDATE],event->name,buf))
+        ssize_t curSend,numSend = 0;
+        int val = 1;
+        setsockopt(client_fd,IPPROTO_TCP,TCP_CORK,&val,sizeof(val));
+        clock_t start = clock();
+        if(sendInfo(client_fd,STR_CMD[UPDATE],event->name,buf))
         {
-            clock_t start = clock();
-            while (TRUE)
+            while (numSend < size)
             {
-                numRead = read(fd,buf,BUF_SIZE);
-                if(numRead == -1) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                curSend = sendfile(client_fd,fd,NULL,size-numSend);
+                if(curSend == -1)
+                {
+                    if(lseek(fd,0,SEEK_CUR)==size)
                         break;
                     else
                         continue;
                 }
-                curSend = write(client_fd,buf,numRead);
                 numSend += curSend;
             }
-
-//            while (numSend < size)
-//            {
-//                curSend = sendfile(client_fd,fd,NULL,size-numSend);
-//                if(curSend == -1)
-//                {
-//                    if(errno == EAGAIN || errno == EWOULDBLOCK)
-//                        break;
-//                    else
-//                        continue;
-//                }
-//                numSend += curSend;
-//            }
-            if(numSend != size)
-                LOG_WARN("file: %s has %ld bytes,but send %ld bytes",event->name,size,numSend);
-            clock_t end = clock();
-            double seconds = (double )(end-start)/CLOCKS_PER_SEC;
-            double speed = (double)numSend/(1024 * 1024 * seconds);
-            LOG_INFO("end send file: %s,use %.2f seconds,speed %.2f Mb/s",event->name,seconds,speed);
         }
+        val = 0;
+        setsockopt(client_fd,IPPROTO_TCP,TCP_CORK,&val,sizeof(val));
+        if(numSend != size)
+            LOG_WARN("file: %s has %ld bytes,but send %ld bytes",event->name,size,numSend);
+        clock_t end = clock();
+        double seconds = (double )(end-start)/CLOCKS_PER_SEC;
+        double speed = (double)numSend/(1024 * 1024 * seconds);
+        LOG_INFO("end send file: %s,use %.2f seconds,speed %.2f Mb/s",event->name,seconds,speed);
+        close(fd);
     }
 }
 /*
@@ -105,14 +93,14 @@ void handleCloseWrite(struct inotify_event *event,int client_fd)
 void handleDelete(struct inotify_event *event,int client_fd)
 {
     if(event->len > 0)
-        sendHeader(client_fd,STR_CMD[DELETE],event->name,NULL);
+        sendInfo(client_fd,STR_CMD[DELETE],event->name,NULL);
 }
 /*
  * when the watched dir was deleted,should notify the pair don't send anything
  * */
 void handleDeleteSelf(struct inotify_event *event,int client_fd)
 {
-    sendHeader(client_fd,STR_CMD[DELETE_SELF],NULL,NULL);
+    sendInfo(client_fd,STR_CMD[DELETE_SELF],NULL,NULL);
 }
 /*
  * when the file was renamed,this function was activate
@@ -127,7 +115,7 @@ void handleRename(struct inotify_event *event,int client_fd)
         {
             if(event->cookie == cookie)
             {
-                sendHeader(client_fd,STR_CMD[RENAME],old,event->name);
+                sendInfo(client_fd,STR_CMD[RENAME],old,event->name);
                 LOG_INFO("rename file from %s to %s",old,event->name);
             }
         }
@@ -209,7 +197,7 @@ void dropData(int fd)
                 if(errno == EAGAIN || errno == EWOULDBLOCK)
                     break;
                 else
-                    continue;
+                    err_exit("read");
             }
         }
     }
@@ -230,7 +218,7 @@ void handleTcpUpdate(int client_fd,const char *filename,const char* size)
     }
     char *endPtr;
     ssize_t totalSize = strtol(size,&endPtr,10);
-    if(totalSize <= 0)
+    if(totalSize < 0)
     {
         LOG_WARN("the header size is %ld,so suspend the update",totalSize);
         return;
@@ -239,15 +227,15 @@ void handleTcpUpdate(int client_fd,const char *filename,const char* size)
     ssize_t curRead;
     static char buf[BUF_SIZE];
     clock_t start = clock();
-    while (TRUE)
+    while (numWrite < totalSize)
     {
         curRead = read(client_fd,buf,BUF_SIZE);
         if(curRead == -1)
         {
             if(errno == EAGAIN || errno == EWOULDBLOCK)
-                break;
-            else
                 continue;
+            else
+                err_exit("read");
         }
         if((curWrite = write(fd,buf,curRead)) == -1)
         {
@@ -258,6 +246,7 @@ void handleTcpUpdate(int client_fd,const char *filename,const char* size)
             numWrite+=curWrite;
     }
     clock_t end = clock();
+    close(fd);
     if(numWrite != totalSize)
         LOG_WARN("file: %s has %ld bytes,but received %ld bytes",filename,totalSize,numWrite);
     double seconds = (double )(end-start)/CLOCKS_PER_SEC;
@@ -311,7 +300,7 @@ void handleTcpEvent(int client_fd)
         return;
     }
     char *cmd,*arg1,*arg2;
-    cmd = strtok(buf," \n");
+    cmd = strtok(buf,"|");
 
     if(cmd == NULL)
     {
@@ -321,8 +310,8 @@ void handleTcpEvent(int client_fd)
     }
     if(strcmp(cmd,STR_CMD[MESSAGE]) != 0)
     {
-        arg1 = strtok(NULL," \n");
-        arg2 = strtok(NULL," \n");
+        arg1 = strtok(NULL,"|");
+        arg2 = strtok(NULL,"|\n");
     }
     if(strcmp(cmd,STR_CMD[DELETE_SELF]) == 0)
     {
@@ -341,7 +330,7 @@ void handleTcpEvent(int client_fd)
     }
     else if(strcmp(cmd,STR_CMD[MESSAGE]) == 0)
     {
-        arg1 = strtok(NULL,"\n");
+        arg1 = strtok(NULL,"|\n");
         LOG_INFO("Receive Message-> %s", (arg1==NULL)?"EMPTY MESSAGE":arg1);
     }
     else if (strcmp(cmd,STR_CMD[RENAME]) == 0)
@@ -392,9 +381,7 @@ int main(int argc,char *argv[])
 
     int eventRead,i;
     struct epoll_event events[2];
-    char buf[BUF_SIZE];
-    snprintf(buf,BUF_SIZE,"CONNECTING %s %s\n",argv[3],argv[4]);
-    write(client_fd,buf, strlen(buf));
+    sendInfo(client_fd,STR_CMD[CONNECTING],argv[3],argv[4]);
     while (TRUE)
     {
         eventRead = epoll_wait(epoll_fd,events,2,-1);

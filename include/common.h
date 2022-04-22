@@ -44,7 +44,7 @@ typedef enum Boolean
 }Boolean;
 typedef enum CMD
 {
-    CONNECTING=0,UPDATE=1,DELETE=2,RENAME=3,DELETE_SELF=4,MESSAGE=5,PAIRED=6,UNPAIRED
+    CONNECTING=0,UPDATE=1,DELETE=2,RENAME=3,DELETE_SELF=4,MESSAGE=5,PAIRED=6,UNPAIRED=7,RESPONSE=8
 }CMD;
 
 typedef enum ERRNO
@@ -54,15 +54,16 @@ typedef enum ERRNO
 
 static const char * STR_CMD[] = {
         "CONNECTING","UPDATE","DELETE","RENAME","DELETE_SELF","MESSAGE",
-        "PAIRED","UNPAIRED"
+        "PAIRED","UNPAIRED","RESPONSE"
 };
 
 ssize_t readLine(int sock,char *buf,int size);
-void sendMsg(int fd,int code,const char *format,...);
 Boolean isSock(int fd);
 void safeCloseSock(int fd);
 int isConnected(int fd);
 int setNonBlock(int fd);
 int addEpollInLetEvent(int epoll_fd,int fd);
-Boolean sendHeader(int client_fd,const char*cmd,const char *arg1,const char *arg2);
+int addEpollInLevelEvent(int epoll_fd,int fd);
+Boolean sendInfo(int fd,const char *header_type,const char *arg1,const char *arg2);
+Boolean sendMsg(int fd,const char *format,...);
 #endif //COMMON_H
